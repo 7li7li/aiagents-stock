@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import config
 from deepseek_client import DeepSeekClient
@@ -16,9 +16,9 @@ from deepseek_client import DeepSeekClient
 class MacroAnalysisAgents:
     """宏观分析多智能体"""
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, stream_callback: Optional[Callable[..., None]] = None) -> None:
         self.model = model or config.DEFAULT_MODEL_NAME
-        self.client = DeepSeekClient(model=self.model)
+        self.client = DeepSeekClient(model=self.model, stream_callback=stream_callback)
 
     def macro_analyst_agent(self, context_text: str) -> Dict[str, Any]:
         prompt = f"""
@@ -106,6 +106,7 @@ class MacroAnalysisAgents:
 3. 每个板块都要写出宏观传导链；
 4. 结尾补一段风格偏好与风险提示。
 """
+        self.client.set_stream_label("行业映射分析师")
         analysis = self.client.call_api(
             [
                 {"role": "system", "content": "你是A股行业配置分析师，擅长把结构化结论写成可执行策略。"},
@@ -184,6 +185,7 @@ class MacroAnalysisAgents:
 2. 每只股票都要写一句核心催化与一句核心风险；
 3. 明确区分“优先关注”和“观察名单”。
 """
+        self.client.set_stream_label("优质标的分析师")
         analysis = self.client.call_api(
             [
                 {"role": "system", "content": "你是A股选股分析师，输出简洁、专业、可执行。"},
@@ -253,6 +255,7 @@ class MacroAnalysisAgents:
         max_tokens: int = 3200,
         temperature: float = 0.45,
     ) -> Dict[str, Any]:
+        self.client.set_stream_label(agent_name)
         analysis = self.client.call_api(
             [
                 {"role": "system", "content": system_prompt},
@@ -275,6 +278,7 @@ class MacroAnalysisAgents:
         fallback: Dict[str, Any],
         max_tokens: int = 2800,
     ) -> Dict[str, Any]:
+        self.client.set_stream_label("结构化结论生成")
         response = self.client.call_api(
             [
                 {"role": "system", "content": system_prompt},

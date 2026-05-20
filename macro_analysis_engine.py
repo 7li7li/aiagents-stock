@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import config
 from macro_analysis_agents import MacroAnalysisAgents
@@ -15,10 +15,10 @@ from macro_analysis_data import MacroAnalysisDataFetcher
 class MacroAnalysisEngine:
     """统筹宏观数据抓取、多智能体分析和结果组织"""
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, stream_callback: Optional[Callable[..., None]] = None) -> None:
         self.model = model or config.DEFAULT_MODEL_NAME
         self.data_fetcher = MacroAnalysisDataFetcher()
-        self.agents = MacroAnalysisAgents(model=self.model)
+        self.agents = MacroAnalysisAgents(model=self.model, stream_callback=stream_callback)
 
     def run_full_analysis(self, progress_callback=None) -> Dict[str, Any]:
         results: Dict[str, Any] = {

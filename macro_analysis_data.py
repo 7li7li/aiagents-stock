@@ -25,6 +25,25 @@ class MacroAnalysisDataFetcher:
     """宏观分析板块数据获取器"""
 
     NBS_URL = "https://data.stats.gov.cn/easyquery.htm"
+    NBS_PUBLIC_RELEASE_URL = (
+        "https://data.stats.gov.cn/dg/website/publicrelease/web/external/queryMacroecData"
+    )
+    NBS_PUBLIC_RELEASE_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Referer": "https://data.stats.gov.cn/dg/website/page.html",
+    }
+    NBS_LEGACY_HEADERS = {
+        "User-Agent": NBS_PUBLIC_RELEASE_HEADERS["User-Agent"],
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://data.stats.gov.cn/easyquery.htm?cn=A01",
+        "X-Requested-With": "XMLHttpRequest",
+    }
 
     # 这里直接绑定统计局指标编码，避免运行时频繁遍历指标树
     NBS_SERIES_CONFIG = {
@@ -36,6 +55,13 @@ class MacroAnalysisDataFetcher:
             "unit": "%",
             "period": "LAST8",
             "transform": "index_minus_100",
+            "public_release": {
+                "ek": "f483cc485ca84aa0b75668871aca70af",
+                "du": "7dae305350e74cf793520af55bceffa4",
+                "dp": "21",
+                "type": "SS",
+                "derive": "yoy_from_same_period",
+            },
         },
         "gdp_qoq": {
             "dbcode": "hgjd",
@@ -52,6 +78,12 @@ class MacroAnalysisDataFetcher:
             "label": "规上工业增加值同比",
             "unit": "%",
             "period": "LAST8",
+            "public_release": {
+                "ek": "2518cdacedbd41e790b455113dff9b27",
+                "du": "414774dee2bc47f392cf13abfa9de882",
+                "dp": "12",
+                "type": "MM",
+            },
         },
         "cpi_yoy": {
             "dbcode": "hgyd",
@@ -61,6 +93,12 @@ class MacroAnalysisDataFetcher:
             "unit": "%",
             "period": "LAST8",
             "transform": "index_minus_100",
+            "public_release": {
+                "ek": "6021702000012|b50457fdeade41b0ac011456f7ab5e44",
+                "du": "c52be9e0e1324cd1a5bf521a8fd1564c",
+                "dp": "1",
+                "type": "MM",
+            },
         },
         "ppi_yoy": {
             "dbcode": "hgyd",
@@ -70,6 +108,12 @@ class MacroAnalysisDataFetcher:
             "unit": "%",
             "period": "LAST8",
             "transform": "index_minus_100",
+            "public_release": {
+                "ek": "6021702000012|ab3a1ae25fdf45c1a15a30351a869800",
+                "du": "c52be9e0e1324cd1a5bf521a8fd1564c",
+                "dp": "1",
+                "type": "MM",
+            },
         },
         "manufacturing_pmi": {
             "dbcode": "hgyd",
@@ -110,6 +154,12 @@ class MacroAnalysisDataFetcher:
             "label": "社零累计同比",
             "unit": "%",
             "period": "LAST8",
+            "public_release": {
+                "ek": "0a31c6ae3efc489299149069ea71749a",
+                "du": "414774dee2bc47f392cf13abfa9de882",
+                "dp": "12",
+                "type": "MM",
+            },
         },
         "fixed_asset_yoy": {
             "dbcode": "hgyd",
@@ -118,6 +168,12 @@ class MacroAnalysisDataFetcher:
             "label": "固定资产投资累计同比",
             "unit": "%",
             "period": "LAST8",
+            "public_release": {
+                "ek": "860475139a534e20b0aafb562335e114",
+                "du": "414774dee2bc47f392cf13abfa9de882",
+                "dp": "12",
+                "type": "MM",
+            },
         },
         "real_estate_invest_yoy": {
             "dbcode": "hgyd",
@@ -282,6 +338,7 @@ class MacroAnalysisDataFetcher:
 
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
+        self._nbs_session: Optional[requests.Session] = None
         if not self.logger.handlers:
             logging.basicConfig(
                 level=logging.INFO,
@@ -337,9 +394,10 @@ class MacroAnalysisDataFetcher:
         return self.SECTOR_STOCK_POOLS
 
     def _post_query(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        response = requests.post(
+        response = self._get_nbs_session().get(
             self.NBS_URL,
             params=params,
+            headers=self.NBS_LEGACY_HEADERS,
             verify=False,
             allow_redirects=True,
             timeout=30,
@@ -350,7 +408,31 @@ class MacroAnalysisDataFetcher:
             raise ValueError(data.get("returndata", "统计局接口返回异常"))
         return data["returndata"]
 
+    def _get_nbs_session(self) -> requests.Session:
+        if self._nbs_session is not None:
+            return self._nbs_session
+
+        session = requests.Session()
+        try:
+            session.get(
+                "https://data.stats.gov.cn/",
+                headers={"User-Agent": self.NBS_PUBLIC_RELEASE_HEADERS["User-Agent"]},
+                verify=False,
+                timeout=15,
+            )
+        except Exception as exc:
+            self.logger.debug("初始化统计局会话失败: %s", exc)
+        self._nbs_session = session
+        return session
+
     def _fetch_nbs_series(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        try:
+            public_release_rows = self._fetch_nbs_public_release_series(config)
+            if public_release_rows:
+                return public_release_rows
+        except Exception as exc:
+            self.logger.warning("统计局新版公开接口失败 %s: %s", config["label"], exc)
+
         params = {
             "m": "QueryData",
             "dbcode": config["dbcode"],
@@ -366,7 +448,13 @@ class MacroAnalysisDataFetcher:
             ),
             "k1": str(int(time.time() * 1000)),
         }
-        data = self._post_query(params)
+        try:
+            data = self._post_query(params)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 403:
+                return self._fetch_akshare_fallback_series(config)
+            raise
+
         wdnodes = data["wdnodes"]
         indicator_nodes = {item["code"]: item for item in wdnodes[0]["nodes"]}
         time_nodes = {item["code"]: item for item in wdnodes[1]["nodes"]}
@@ -398,10 +486,200 @@ class MacroAnalysisDataFetcher:
                     "value_raw": float(value),
                     "value": self._transform_value(float(value), config),
                     "unit": config.get("unit", ""),
+                    "source": "国家统计局旧版 easyquery 接口",
+                    "source_url": self.NBS_URL,
                 }
             )
 
         rows.sort(key=lambda item: item["period_code"], reverse=True)
+        return rows
+
+    def _fetch_nbs_public_release_series(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        public_config = config.get("public_release")
+        if not public_config:
+            return []
+
+        payload = {
+            "ek": public_config["ek"],
+            "du": public_config["du"],
+            "dp": public_config["dp"],
+            "isMap": "0",
+            "period": "",
+            "type": public_config["type"],
+        }
+        response = requests.post(
+            self.NBS_PUBLIC_RELEASE_URL,
+            json=payload,
+            headers=self.NBS_PUBLIC_RELEASE_HEADERS,
+            verify=False,
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("success"):
+            raise ValueError(data.get("message") or "统计局新版公开接口返回异常")
+
+        raw_rows = data.get("data") or []
+        if public_config.get("derive") == "yoy_from_same_period":
+            return self._derive_yoy_from_same_period(raw_rows, config)
+
+        rows: List[Dict[str, Any]] = []
+        for item in raw_rows[-8:][::-1]:
+            value = pd.to_numeric(item.get("v"), errors="coerce")
+            if pd.isna(value):
+                continue
+            value_float = float(value)
+            rows.append(
+                {
+                    "series_code": config["series_code"],
+                    "series_label": item.get("ek_name") or config["label"],
+                    "period_code": str(item.get("dt") or ""),
+                    "period_label": str(item.get("dt_name") or item.get("dt") or ""),
+                    "value_raw": value_float,
+                    "value": self._transform_value(value_float, config),
+                    "unit": config.get("unit", ""),
+                    "source": "国家统计局新版公开发布接口",
+                    "source_url": self.NBS_PUBLIC_RELEASE_URL,
+                }
+            )
+        return rows
+
+    def _derive_yoy_from_same_period(
+        self, raw_rows: List[Dict[str, Any]], config: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        values_by_period = {}
+        labels_by_period = {}
+        for item in raw_rows:
+            period_code = str(item.get("dt") or "")
+            value = pd.to_numeric(item.get("v"), errors="coerce")
+            if not period_code or pd.isna(value):
+                continue
+            values_by_period[period_code] = float(value)
+            labels_by_period[period_code] = str(item.get("dt_name") or period_code)
+
+        rows: List[Dict[str, Any]] = []
+        for period_code in sorted(values_by_period.keys(), reverse=True):
+            previous_code = self._same_period_last_year(period_code)
+            previous_value = values_by_period.get(previous_code)
+            if not previous_value:
+                continue
+            value = round((values_by_period[period_code] - previous_value) / previous_value * 100, 2)
+            rows.append(
+                {
+                    "series_code": config["series_code"],
+                    "series_label": f"{config['label']}（统计局公开数据推算）",
+                    "period_code": period_code,
+                    "period_label": labels_by_period.get(period_code, period_code),
+                    "value_raw": value,
+                    "value": value,
+                    "unit": config.get("unit", ""),
+                    "source": "国家统计局新版公开发布接口（同比推算）",
+                    "source_url": self.NBS_PUBLIC_RELEASE_URL,
+                }
+            )
+            if len(rows) >= 8:
+                break
+        return rows
+
+    @staticmethod
+    def _same_period_last_year(period_code: str) -> str:
+        match = re.match(r"^(\d{4})(.*)$", period_code)
+        if not match:
+            return period_code
+        return f"{int(match.group(1)) - 1}{match.group(2)}"
+
+    def _fetch_akshare_fallback_series(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """统计局接口 403 时使用 AkShare 可用宏观接口降级。"""
+        label = config["label"]
+        fallback_config = {
+            "GDP当季同比": ("macro_china_gdp_yearly", 1, 2, False),
+            "规上工业增加值同比": ("macro_china_industrial_production_yoy", 1, 2, False),
+            "CPI同比": ("macro_china_cpi_monthly", 1, 2, False),
+            "PPI同比": ("macro_china_ppi_yearly", 1, 2, False),
+            "制造业PMI": ("macro_china_pmi_yearly", 1, 2, False),
+            "非制造业商务活动指数": ("macro_china_non_man_pmi", 1, 2, False),
+            "M2同比": ("macro_china_money_supply", 0, 2, True),
+            "社零累计同比": ("macro_china_consumer_goods_retail", 0, 5, True),
+        }
+
+        if label == "全国城镇调查失业率":
+            return self._fetch_akshare_unemployment_series(config)
+
+        fallback = fallback_config.get(label)
+        if not fallback:
+            return []
+
+        func_name, date_col_index, value_col_index, latest_first = fallback
+        func = getattr(ak, func_name, None)
+        if func is None:
+            return []
+
+        df = func()
+        return self._rows_from_akshare_frame(
+            df=df,
+            config=config,
+            date_col_index=date_col_index,
+            value_col_index=value_col_index,
+            latest_first=latest_first,
+        )
+
+    def _fetch_akshare_unemployment_series(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        df = ak.macro_china_urban_unemployment()
+        if df is None or df.empty:
+            return []
+
+        rows = []
+        for _, group in df.groupby(df.columns[0]):
+            # 每月有总体、本地户籍、外来户籍三项；总体名称最短且最适合作为宏观指标。
+            item_col = df.columns[1]
+            selected = group.assign(_name_len=group[item_col].astype(str).str.len()).sort_values("_name_len").iloc[0]
+            rows.append(selected)
+
+        normalized = pd.DataFrame(rows)
+        return self._rows_from_akshare_frame(
+            df=normalized,
+            config=config,
+            date_col_index=0,
+            value_col_index=2,
+            latest_first=False,
+        )
+
+    def _rows_from_akshare_frame(
+        self,
+        df: pd.DataFrame,
+        config: Dict[str, Any],
+        date_col_index: int,
+        value_col_index: int,
+        latest_first: bool,
+        limit: int = 8,
+    ) -> List[Dict[str, Any]]:
+        if df is None or df.empty:
+            return []
+
+        if latest_first:
+            recent = df.head(limit)
+        else:
+            recent = df.tail(limit).iloc[::-1]
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in recent.iterrows():
+            value = pd.to_numeric(row.iloc[value_col_index], errors="coerce")
+            if pd.isna(value):
+                continue
+            period_label = str(row.iloc[date_col_index])
+            rows.append(
+                {
+                    "series_code": config["series_code"],
+                    "series_label": config["label"],
+                    "period_code": period_label,
+                    "period_label": period_label,
+                    "value_raw": float(value),
+                    "value": self._transform_value(float(value), config),
+                    "unit": config.get("unit", ""),
+                    "source": "AkShare 宏观数据接口（统计局接口不可用时兜底）",
+                    "source_url": "https://akshare.akfamily.xyz/",
+                }
+            )
         return rows
 
     @staticmethod
@@ -430,6 +708,8 @@ class MacroAnalysisDataFetcher:
                 "previous_value": previous["value"] if previous else None,
                 "previous_period_label": previous["period_label"] if previous else None,
                 "change": change,
+                "source": latest.get("source", "-"),
+                "source_url": latest.get("source_url", ""),
             }
         return snapshot
 
@@ -445,6 +725,7 @@ class MacroAnalysisDataFetcher:
                         "数值": item["value"],
                         "原始值": item["value_raw"],
                         "单位": item["unit"] or "-",
+                        "数据来源": item.get("source", "-"),
                     }
                     for item in series
                 ]
@@ -809,7 +1090,7 @@ class MacroAnalysisDataFetcher:
 
     def build_prompt_context(self, data: Dict[str, Any]) -> str:
         snapshot = data.get("macro_snapshot", {})
-        lines = ["===== 当前国内宏观数据快照（国家统计局） ====="]
+        lines = ["===== 当前国内宏观数据快照（含数据来源） ====="]
         for key in self.NBS_SERIES_CONFIG.keys():
             item = snapshot.get(key)
             if not item:
@@ -820,7 +1101,7 @@ class MacroAnalysisDataFetcher:
                 else ""
             )
             lines.append(
-                f"- {item['label']}: {item['value']}{item['unit']} ({item['period_label']}){change_str}"
+                f"- {item['label']}: {item['value']}{item['unit']} ({item['period_label']}){change_str}；来源：{item.get('source', '-')}"
             )
 
         lines.append("")

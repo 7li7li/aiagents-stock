@@ -32,7 +32,7 @@ class DeepSeekClient:
         self.stream_label = label or "AI分析"
         
     def call_api(self, messages: List[Dict[str, str]], model: Optional[str] = None,
-                 temperature: float = 0.7, max_tokens: int = 1600, max_retries: int = 1) -> str:
+                 temperature: float = 0.7, max_tokens: int = 1600, max_retries: int = 2) -> str:
         """调用DeepSeek API（流式传输，自动重试）"""
         # 使用实例的模型，如果没有传入则使用默认模型
         model_to_use = model or self.model
@@ -44,6 +44,8 @@ class DeepSeekClient:
         
         last_error = None
         for attempt in range(1, max_retries + 1):
+            result = ""
+            reasoning_content = ""
             try:
                 # 使用流式传输，避免长时间等待导致CDN 524超时
                 stream = self.client.chat.completions.create(
@@ -53,10 +55,6 @@ class DeepSeekClient:
                     max_tokens=max_tokens,
                     stream=True
                 )
-
-                # 收集流式响应
-                result = ""
-                reasoning_content = ""
 
                 for chunk in stream:
                     if chunk.choices and len(chunk.choices) > 0:
@@ -84,6 +82,14 @@ class DeepSeekClient:
 
             except Exception as e:
                 last_error = e
+                partial_result = ""
+                if reasoning_content:
+                    partial_result += f"【推理过程】\n{reasoning_content}\n\n"
+                if result:
+                    partial_result += result
+                if partial_result:
+                    return f"{partial_result}\n\n> 注：AI流式输出中途断开，以上为已接收内容。错误：{e}"
+
                 if attempt < max_retries:
                     import time
                     wait = attempt * 2

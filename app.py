@@ -267,6 +267,8 @@ st.markdown("""
     
     /* 隐藏Streamlit默认元素 */
     #MainMenu {visibility: hidden;}
+    .stDeployButton {display: none;}
+    [data-testid="stToolbar"] {display: none;}
     footer {visibility: hidden;}
     
     /* 响应式设计 */
@@ -290,9 +292,6 @@ def main():
         <p class="nav-subtitle">基于DeepSeek的专业量化投资分析平台 | Multi-Agent Stock Analysis System</p>
     </div>
     """, unsafe_allow_html=True)
-
-    # 学习资源展示
-    st.info("📺 **新手必看干货**：为了在股市长久生存，建议您观看 👉 [股票知识讲解合集](https://www.bilibili.com/video/BV1Y2FGzzEeS/) 和 [投资认知提升合集](https://www.bilibili.com/video/BV1ugBMBAEbW) 👈，相信会对您有很大帮助！")
 
     # 侧边栏
     with st.sidebar:
@@ -504,17 +503,6 @@ def main():
             7. AI分析 → 8. 团队讨论 → 9. 决策
             """)
             
-        # 学习资源
-        with st.expander("📺 学习视频合集"):
-            st.markdown("""
-            **📢 B站干货合集**
-            
-            如果你希望能在股市中长久生存下去，建议你能把下面的合集看完，会对你有很大帮助的！
-            
-            - 📚 [股票知识讲解合集](https://www.bilibili.com/video/BV1Y2FGzzEeS/)
-            - 🧠 [投资认知提升合集](https://www.bilibili.com/video/BV1ugBMBAEbW)
-            """)
-
     # 检查是否显示历史记录
     if 'show_history' in st.session_state and st.session_state.show_history:
         display_history_records()

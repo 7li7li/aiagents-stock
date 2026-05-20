@@ -58,13 +58,28 @@ def display_macro_analysis() -> None:
 def run_macro_analysis() -> None:
     progress_bar = st.progress(0)
     status = st.empty()
+    stream_container = st.container()
+    stream_text: Dict[str, str] = {}
+    stream_placeholders: Dict[str, Any] = {}
 
     def callback(pct: int, text: str) -> None:
         progress_bar.progress(pct)
         status.text(text)
 
+    def stream_callback(label: str, chunk: str) -> None:
+        if not chunk:
+            return
+        if label not in stream_placeholders:
+            with stream_container.expander(f"{label}（流式输出）", expanded=True):
+                stream_placeholders[label] = st.empty()
+        stream_text[label] = stream_text.get(label, "") + chunk
+        stream_placeholders[label].markdown(stream_text[label])
+
     try:
-        engine = MacroAnalysisEngine(model=config.DEFAULT_MODEL_NAME)
+        engine = MacroAnalysisEngine(
+            model=config.DEFAULT_MODEL_NAME,
+            stream_callback=stream_callback,
+        )
         result = engine.run_full_analysis(progress_callback=callback)
         st.session_state["macro_analysis_result"] = result
         time.sleep(0.8)
@@ -144,7 +159,7 @@ def display_macro_cards(snapshot: Dict[str, Any]) -> None:
             label=item["label"],
             value=f"{item['value']}{item['unit']}",
             delta=delta,
-            help=item.get("period_label", ""),
+            help=f"期间：{item.get('period_label', '-')}\n来源：{item.get('source', '-')}",
         )
 
 
@@ -162,6 +177,7 @@ def display_macro_tables(raw_data: Dict[str, Any]) -> None:
                 "最新期间": item["period_label"],
                 "前值": f"{item['previous_value']}{item['unit']}" if item.get("previous_value") is not None else "-",
                 "变动": f"{item['change']:+.2f}{item['unit']}" if item.get("change") is not None else "-",
+                "数据来源": item.get("source", "-"),
             }
         )
     if overview_rows:
