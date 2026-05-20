@@ -21,6 +21,7 @@ class StockDataFetcher:
     def get_stock_info(self, symbol):
         """获取股票基本信息"""
         try:
+            symbol = symbol.strip()
             # 处理中国A股
             if self._is_chinese_stock(symbol):
                 return self._get_chinese_stock_info(symbol)
@@ -36,6 +37,7 @@ class StockDataFetcher:
     def get_stock_data(self, symbol, period="1y", interval="1d"):
         """获取股票历史数据"""
         try:
+            symbol = symbol.strip()
             if self._is_chinese_stock(symbol):
                 return self._get_chinese_stock_data(symbol, period)
             elif self._is_hk_stock(symbol):
@@ -591,6 +593,7 @@ class StockDataFetcher:
     def get_financial_data(self, symbol):
         """获取详细财务数据"""
         try:
+            symbol = symbol.strip()
             if self._is_chinese_stock(symbol):
                 return self._get_chinese_financial_data(symbol)
             elif self._is_hk_stock(symbol):

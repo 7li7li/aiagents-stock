@@ -4,12 +4,24 @@
 """
 
 import os
+import urllib.request
 import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 # 加载环境变量
 load_dotenv()
+
+# 禁用代理，避免系统代理干扰数据获取
+os.environ.pop('HTTP_PROXY', None)
+os.environ.pop('HTTPS_PROXY', None)
+os.environ.pop('http_proxy', None)
+os.environ.pop('https_proxy', None)
+os.environ['NO_PROXY'] = '*'
+os.environ['no_proxy'] = '*'
+urllib.request.install_opener(
+    urllib.request.build_opener(urllib.request.ProxyHandler({}))
+)
 
 
 class DataSourceManager:
