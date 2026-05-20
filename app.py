@@ -1619,77 +1619,75 @@ def display_agents_analysis(agents_results):
 
 def display_team_discussion(discussion_result):
     """显示团队讨论"""
-    st.subheader("🤝 分析团队讨论")
+    with st.expander("🤝 分析团队讨论", expanded=False):
+        st.markdown("""
+        <div class="agent-card">
+            <h4>💭 团队综合讨论</h4>
+            <p>各位分析师正在就该股票进行深入讨论，整合不同维度的分析观点...</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-    st.markdown("""
-    <div class="agent-card">
-        <h4>💭 团队综合讨论</h4>
-        <p>各位分析师正在就该股票进行深入讨论，整合不同维度的分析观点...</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.write(discussion_result)
+        st.write(discussion_result)
 
 def display_final_decision(final_decision, stock_info, agents_results=None, discussion_result=None):
     """显示最终投资决策"""
-    st.subheader("📋 最终投资决策")
+    with st.expander("📋 最终投资决策", expanded=True):
+        if isinstance(final_decision, dict) and "decision_text" not in final_decision:
+            # JSON格式的决策
+            col1, col2 = st.columns([1, 2])
 
-    if isinstance(final_decision, dict) and "decision_text" not in final_decision:
-        # JSON格式的决策
-        col1, col2 = st.columns([1, 2])
+            with col1:
+                # 投资评级
+                rating = final_decision.get('rating', '未知')
+                rating_color = {"买入": "🟢", "持有": "🟡", "卖出": "🔴"}.get(rating, "⚪")
 
-        with col1:
-            # 投资评级
-            rating = final_decision.get('rating', '未知')
-            rating_color = {"买入": "🟢", "持有": "🟡", "卖出": "🔴"}.get(rating, "⚪")
+                st.markdown(f"""
+                <div class="decision-card">
+                    <h3 style="text-align: center;">{rating_color} {rating}</h3>
+                    <h4 style="text-align: center;">投资评级</h4>
+                </div>
+                """, unsafe_allow_html=True)
 
-            st.markdown(f"""
-            <div class="decision-card">
-                <h3 style="text-align: center;">{rating_color} {rating}</h3>
-                <h4 style="text-align: center;">投资评级</h4>
-            </div>
-            """, unsafe_allow_html=True)
+                # 关键指标
+                confidence = final_decision.get('confidence_level', 'N/A')
+                st.metric("信心度", f"{confidence}/10")
 
-            # 关键指标
-            confidence = final_decision.get('confidence_level', 'N/A')
-            st.metric("信心度", f"{confidence}/10")
+                target_price = final_decision.get('target_price', 'N/A')
+                st.metric("目标价格", f"{target_price}")
 
-            target_price = final_decision.get('target_price', 'N/A')
-            st.metric("目标价格", f"{target_price}")
+                position_size = final_decision.get('position_size', 'N/A')
+                st.metric("建议仓位", f"{position_size}")
 
-            position_size = final_decision.get('position_size', 'N/A')
-            st.metric("建议仓位", f"{position_size}")
+            with col2:
+                # 详细建议
+                st.markdown("**🎯 操作建议:**")
+                st.write(final_decision.get('operation_advice', '暂无建议'))
 
-        with col2:
-            # 详细建议
-            st.markdown("**🎯 操作建议:**")
-            st.write(final_decision.get('operation_advice', '暂无建议'))
+                st.markdown("**📍 关键位置:**")
+                col2_1, col2_2 = st.columns(2)
 
-            st.markdown("**📍 关键位置:**")
-            col2_1, col2_2 = st.columns(2)
+                with col2_1:
+                    st.write(f"**进场区间:** {final_decision.get('entry_range', 'N/A')}")
+                    st.write(f"**止盈位:** {final_decision.get('take_profit', 'N/A')}")
 
-            with col2_1:
-                st.write(f"**进场区间:** {final_decision.get('entry_range', 'N/A')}")
-                st.write(f"**止盈位:** {final_decision.get('take_profit', 'N/A')}")
+                with col2_2:
+                    st.write(f"**止损位:** {final_decision.get('stop_loss', 'N/A')}")
+                    st.write(f"**持有周期:** {final_decision.get('holding_period', 'N/A')}")
 
-            with col2_2:
-                st.write(f"**止损位:** {final_decision.get('stop_loss', 'N/A')}")
-                st.write(f"**持有周期:** {final_decision.get('holding_period', 'N/A')}")
+            # 风险提示
+            risk_warning = final_decision.get('risk_warning', '')
+            if risk_warning:
+                st.markdown(f"""
+                <div class="warning-card">
+                    <h4>⚠️ 风险提示</h4>
+                    <p>{risk_warning}</p>
+                </div>
+                """, unsafe_allow_html=True)
 
-        # 风险提示
-        risk_warning = final_decision.get('risk_warning', '')
-        if risk_warning:
-            st.markdown(f"""
-            <div class="warning-card">
-                <h4>⚠️ 风险提示</h4>
-                <p>{risk_warning}</p>
-            </div>
-            """, unsafe_allow_html=True)
-
-    else:
-        # 文本格式的决策
-        decision_text = final_decision.get('decision_text', str(final_decision))
-        st.write(decision_text)
+        else:
+            # 文本格式的决策
+            decision_text = final_decision.get('decision_text', str(final_decision))
+            st.write(decision_text)
 
     # 添加PDF导出功能
     st.markdown("---")
