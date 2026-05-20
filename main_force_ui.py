@@ -555,8 +555,11 @@ def run_main_force_batch_analysis():
                 value=3,
                 help="同时分析的股票数量"
             )
+            st.warning("当前 API 后台出现较多 524，实际请求已临时限制为单线程。")
         else:
             max_workers = 1
+
+    effective_workers = 1
 
     st.markdown("---")
 
@@ -592,7 +595,7 @@ def run_main_force_batch_analysis():
             st.write(f"**股票代码列表**: {stock_codes}")
             st.write(f"**代码格式检查**: {'✅ 无后缀，格式正确' if all('.' not in str(c) for c in stock_codes) else '❌ 包含后缀，可能有问题'}")
             st.write(f"**分析模式**: {analysis_mode}")
-            st.write(f"**线程数**: {max_workers if analysis_mode == 'parallel' else 1}")
+            st.write(f"**请求并发数**: {effective_workers}")
 
         # 配置分析师参数
         enabled_analysts_config = {
@@ -643,9 +646,9 @@ def run_main_force_batch_analysis():
 
         else:
             # 并行分析
-            status_text.text(f"并行分析 {len(stock_codes)} 只股票（{max_workers}线程）...")
+            status_text.text(f"并行模式已限流，单线程分析 {len(stock_codes)} 只股票...")
             print(f"\n{'='*60}")
-            print(f"🚀 开始并行分析 {len(stock_codes)} 只股票")
+            print(f"🚀 开始限流分析 {len(stock_codes)} 只股票，实际并发: {effective_workers}")
             print(f"{'='*60}")
 
             def analyze_one(code):
@@ -663,7 +666,7 @@ def run_main_force_batch_analysis():
                     print(f"  分析失败: {code} - {str(e)}")
                     return {"symbol": code, "success": False, "error": str(e)}
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
                 futures = {executor.submit(analyze_one, code): code for code in stock_codes}
 
                 completed = 0

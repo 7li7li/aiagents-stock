@@ -4,6 +4,8 @@
 /test_pdf_export.py
 /test_pe_pb.py
 /venv
+/env/
+/.vs/
 /__pycache__
 # 环境变量文件
 .env

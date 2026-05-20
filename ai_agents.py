@@ -1,14 +1,15 @@
 from deepseek_client import DeepSeekClient
 from typing import Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import config
 
 class StockAnalysisAgents:
     """股票分析AI智能体集合"""
     
-    def __init__(self, model=None):
+    def __init__(self, model=None, stream_callback=None):
         self.model = model or config.DEFAULT_MODEL_NAME
-        self.deepseek_client = DeepSeekClient(model=self.model)
+        self.deepseek_client = DeepSeekClient(model=self.model, stream_callback=stream_callback)
         
     def technical_analyst_agent(self, stock_info: Dict, stock_data: Any, indicators: Dict) -> Dict[str, Any]:
         """技术面分析智能体"""
@@ -206,7 +207,7 @@ class StockAnalysisAgents:
             {"role": "user", "content": risk_prompt}
         ]
         
-        analysis = self.deepseek_client.call_api(messages, max_tokens=6000)
+        analysis = self.deepseek_client.call_api(messages, max_tokens=2000)
         
         return {
             "agent_name": "风险管理师",
@@ -294,7 +295,7 @@ class StockAnalysisAgents:
             {"role": "user", "content": sentiment_prompt}
         ]
         
-        analysis = self.deepseek_client.call_api(messages, max_tokens=4000)
+        analysis = self.deepseek_client.call_api(messages, max_tokens=1800)
         
         return {
             "agent_name": "市场情绪分析师",
@@ -394,7 +395,7 @@ class StockAnalysisAgents:
             {"role": "user", "content": news_prompt}
         ]
         
-        analysis = self.deepseek_client.call_api(messages, max_tokens=4000)
+        analysis = self.deepseek_client.call_api(messages, max_tokens=1800)
         
         return {
             "agent_name": "新闻分析师",
@@ -436,32 +437,43 @@ class StockAnalysisAgents:
         print(f"📋 参与分析的分析师: {', '.join(active_analysts)}")
         print("=" * 50)
         
-        # 并行运行各个分析师
+        # 串行运行各个分析师，避免多个长流式请求同时打到中转 API 导致 524。
         agents_results = {}
-        
-        # 技术面分析
+        analysis_tasks = []
+        stream_labels = {
+            "technical": "技术分析师",
+            "fundamental": "基本面分析师",
+            "fund_flow": "资金面分析师",
+            "risk_management": "风险管理师",
+            "market_sentiment": "市场情绪分析师",
+            "news": "新闻分析师",
+        }
+
         if enabled_analysts.get('technical', True):
-            agents_results["technical"] = self.technical_analyst_agent(stock_info, stock_data, indicators)
-        
-        # 基本面分析
+            analysis_tasks.append(("technical", self.technical_analyst_agent, (stock_info, stock_data, indicators)))
         if enabled_analysts.get('fundamental', True):
-            agents_results["fundamental"] = self.fundamental_analyst_agent(stock_info, financial_data, quarterly_data)
-        
-        # 资金面分析（传入资金流向数据）
+            analysis_tasks.append(("fundamental", self.fundamental_analyst_agent, (stock_info, financial_data, quarterly_data)))
         if enabled_analysts.get('fund_flow', True):
-            agents_results["fund_flow"] = self.fund_flow_analyst_agent(stock_info, indicators, fund_flow_data)
-        
-        # 风险管理分析（传入风险数据）
+            analysis_tasks.append(("fund_flow", self.fund_flow_analyst_agent, (stock_info, indicators, fund_flow_data)))
         if enabled_analysts.get('risk', True):
-            agents_results["risk_management"] = self.risk_management_agent(stock_info, indicators, risk_data)
-        
-        # 市场情绪分析（传入市场情绪数据）
+            analysis_tasks.append(("risk_management", self.risk_management_agent, (stock_info, indicators, risk_data)))
         if enabled_analysts.get('sentiment', False):
-            agents_results["market_sentiment"] = self.market_sentiment_agent(stock_info, sentiment_data)
-        
-        # 新闻分析（传入新闻数据）
+            analysis_tasks.append(("market_sentiment", self.market_sentiment_agent, (stock_info, sentiment_data)))
         if enabled_analysts.get('news', False):
-            agents_results["news"] = self.news_analyst_agent(stock_info, news_data)
+            analysis_tasks.append(("news", self.news_analyst_agent, (stock_info, news_data)))
+
+        for key, agent_func, args in analysis_tasks:
+            try:
+                self.deepseek_client.set_stream_label(stream_labels.get(key, key))
+                agents_results[key] = agent_func(*args)
+                print(f"   ✅ {key} 分析完成")
+            except Exception as e:
+                print(f"   ❌ {key} 分析异常: {e}")
+                agents_results[key] = {
+                    "agent_name": key,
+                    "analysis": f"分析失败: {str(e)}",
+                    "confidence": 0.0
+                }
         
         print("✅ 所有已选择的分析师完成分析")
         print("=" * 50)
@@ -530,7 +542,8 @@ class StockAnalysisAgents:
             {"role": "user", "content": discussion_prompt}
         ]
         
-        discussion_result = self.deepseek_client.call_api(messages, max_tokens=6000)
+        self.deepseek_client.set_stream_label("团队讨论")
+        discussion_result = self.deepseek_client.call_api(messages, max_tokens=2500)
         
         print("✅ 团队讨论完成")
         return discussion_result
@@ -540,6 +553,7 @@ class StockAnalysisAgents:
         print("📋 正在制定最终投资决策...")
         time.sleep(1)
         
+        self.deepseek_client.set_stream_label("最终投资决策")
         decision = self.deepseek_client.final_decision(discussion_result, stock_info, indicators)
         
         print("✅ 最终投资决策完成")

@@ -1,55 +1,96 @@
 import openai
+import httpx
 import json
-from typing import Dict, List, Any, Optional
+import os
+from typing import Callable, Dict, List, Any, Optional
 import config
 
 class DeepSeekClient:
     """DeepSeek API客户端"""
     
-    def __init__(self, model=None):
+    def __init__(self, model=None, stream_callback: Optional[Callable[[str], None]] = None):
         self.model = model or config.DEFAULT_MODEL_NAME
+        self.stream_callback = stream_callback
+        self.stream_label = "AI分析"
+        # AI API直连，禁用系统/环境代理，避免流式响应被本地代理中断。
+        for proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            os.environ.pop(proxy_var, None)
+        os.environ["NO_PROXY"] = "*"
+        os.environ["no_proxy"] = "*"
+        http_client = httpx.Client(
+            trust_env=False,
+            timeout=httpx.Timeout(connect=15.0, read=300.0, write=30.0, pool=30.0)
+        )
         self.client = openai.OpenAI(
             api_key=config.DEEPSEEK_API_KEY,
-            base_url=config.DEEPSEEK_BASE_URL
+            base_url=config.DEEPSEEK_BASE_URL,
+            http_client=http_client
         )
+
+    def set_stream_label(self, label: str):
+        """设置当前流式输出所属分类。"""
+        self.stream_label = label or "AI分析"
         
-    def call_api(self, messages: List[Dict[str, str]], model: Optional[str] = None, 
-                 temperature: float = 0.7, max_tokens: int = 2000) -> str:
-        """调用DeepSeek API"""
+    def call_api(self, messages: List[Dict[str, str]], model: Optional[str] = None,
+                 temperature: float = 0.7, max_tokens: int = 1600, max_retries: int = 1) -> str:
+        """调用DeepSeek API（流式传输，自动重试）"""
         # 使用实例的模型，如果没有传入则使用默认模型
         model_to_use = model or self.model
+        max_tokens = min(max_tokens, 2500)
         
         # 对于 reasoner 模型，自动增加 max_tokens
-        if "reasoner" in model_to_use.lower() and max_tokens <= 2000:
-            max_tokens = 8000  # reasoner 模型需要更多 tokens 来输出推理过程
+        if "reasoner" in model_to_use.lower() and max_tokens <= 1600:
+            max_tokens = 2500  # 控制长输出，减少中转 API 524 风险
         
-        try:
-            response = self.client.chat.completions.create(
-                model=model_to_use,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            
-            # 处理 reasoner 模型的响应
-            message = response.choices[0].message
-            
-            # reasoner 模型可能包含 reasoning_content（推理过程）和 content（最终答案）
-            # 我们返回完整内容，包括推理过程（如果有的话）
-            result = ""
-            
-            # 检查是否有推理内容
-            if hasattr(message, 'reasoning_content') and message.reasoning_content:
-                result += f"【推理过程】\n{message.reasoning_content}\n\n"
-            
-            # 添加最终内容
-            if message.content:
-                result += message.content
-            
-            return result if result else "API返回空响应"
-            
-        except Exception as e:
-            return f"API调用失败: {str(e)}"
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                # 使用流式传输，避免长时间等待导致CDN 524超时
+                stream = self.client.chat.completions.create(
+                    model=model_to_use,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True
+                )
+
+                # 收集流式响应
+                result = ""
+                reasoning_content = ""
+
+                for chunk in stream:
+                    if chunk.choices and len(chunk.choices) > 0:
+                        delta = chunk.choices[0].delta
+                        # 收集推理内容（reasoner模型）
+                        if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                            reasoning_content += delta.reasoning_content
+                        # 收集正文内容
+                        if delta.content:
+                            result += delta.content
+                            if self.stream_callback:
+                                try:
+                                    self.stream_callback(self.stream_label, delta.content)
+                                except TypeError:
+                                    self.stream_callback(delta.content)
+
+                # 组装最终结果
+                final_result = ""
+                if reasoning_content:
+                    final_result += f"【推理过程】\n{reasoning_content}\n\n"
+                if result:
+                    final_result += result
+
+                return final_result if final_result else "API返回空响应"
+
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    import time
+                    wait = attempt * 2
+                    print(f"[AI API] 第{attempt}次调用失败({e})，{wait}秒后重试...")
+                    time.sleep(wait)
+
+        return f"API调用失败: {str(last_error)}"
     
     def technical_analysis(self, stock_info: Dict, stock_data: Any, indicators: Dict) -> str:
         """技术面分析"""
@@ -349,7 +390,7 @@ class DeepSeekClient:
             {"role": "user", "content": prompt}
         ]
         
-        return self.call_api(messages, max_tokens=3000)
+        return self.call_api(messages, max_tokens=1800)
     
     def comprehensive_discussion(self, technical_report: str, fundamental_report: str, 
                                fund_flow_report: str, stock_info: Dict) -> str:
@@ -388,7 +429,7 @@ class DeepSeekClient:
             {"role": "user", "content": prompt}
         ]
         
-        return self.call_api(messages, max_tokens=6000)
+        return self.call_api(messages, max_tokens=2500)
     
     def final_decision(self, comprehensive_discussion: str, stock_info: Dict, 
                       indicators: Dict) -> Dict[str, Any]:
@@ -441,7 +482,7 @@ class DeepSeekClient:
             {"role": "user", "content": prompt}
         ]
         
-        response = self.call_api(messages, temperature=0.3, max_tokens=4000)
+        response = self.call_api(messages, temperature=0.3, max_tokens=1500)
         
         try:
             # 尝试解析JSON响应

@@ -1,3 +1,19 @@
+import os
+import urllib.request
+# 清除系统代理，避免干扰akshare等数据源的网络请求
+os.environ.pop('HTTP_PROXY', None)
+os.environ.pop('HTTPS_PROXY', None)
+os.environ.pop('ALL_PROXY', None)
+os.environ.pop('http_proxy', None)
+os.environ.pop('https_proxy', None)
+os.environ.pop('all_proxy', None)
+os.environ['NO_PROXY'] = '*'
+os.environ['no_proxy'] = '*'
+# 禁用urllib级别的系统代理（Windows注册表代理）
+urllib.request.install_opener(
+    urllib.request.build_opener(urllib.request.ProxyHandler({}))
+)
+
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
@@ -6,7 +22,6 @@ import json
 from datetime import datetime
 import time
 import base64
-import os
 import config
 
 from stock_data import StockDataFetcher
@@ -1066,8 +1081,8 @@ def run_batch_analysis(stock_list, period, batch_mode="顺序分析"):
                     progress_status[0][symbol] = error_result
                 return error_result
 
-        # 使用线程池执行，限制最大并发数为3以避免API限流
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        # 中转 API 容易在多路长请求下返回 524，这里强制单并发执行。
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future_to_symbol = {executor.submit(analyze_with_progress, symbol): symbol
                               for symbol in stock_list}
 
@@ -1304,7 +1319,26 @@ def run_stock_analysis(symbol, period):
         status_text.text("🤖 正在初始化AI分析系统...")
         # 使用选择的模型
         selected_model = st.session_state.get('selected_model', config.DEFAULT_MODEL_NAME)
-        agents = StockAnalysisAgents(model=selected_model)
+        st.markdown("### 🧠 大模型流式输出")
+        live_container = st.container()
+        live_sections = {}
+
+        def append_stream_chunk(label: str, chunk: str):
+            section = live_sections.get(label)
+            if section is None:
+                with live_container.expander(f"🧠 {label}", expanded=True):
+                    placeholder = st.empty()
+                section = {"chunks": [], "chars": 0, "placeholder": placeholder}
+                live_sections[label] = section
+
+            section["chunks"].append(chunk)
+            section["chars"] += len(chunk)
+            if section["chars"] >= 80:
+                text = "".join(section["chunks"])
+                section["placeholder"].markdown(text[-6000:])
+                section["chars"] = 0
+
+        agents = StockAnalysisAgents(model=selected_model, stream_callback=append_stream_chunk)
         progress_bar.progress(55)
 
         # 获取所有分析师选择状态
@@ -1346,6 +1380,8 @@ def run_stock_analysis(symbol, period):
         status_text.text("📋 正在制定最终投资决策...")
         final_decision = agents.make_final_decision(discussion_result, stock_info, indicators)
         progress_bar.progress(100)
+        for section in live_sections.values():
+            section["placeholder"].markdown("".join(section["chunks"])[-6000:])
 
         # 显示最终决策
         display_final_decision(final_decision, stock_info, agents_results, discussion_result)

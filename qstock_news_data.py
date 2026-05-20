@@ -7,8 +7,16 @@ import pandas as pd
 import sys
 import io
 import warnings
+import json
+import re
+import time
 from datetime import datetime, timedelta
 import akshare as ak
+try:
+    from curl_cffi import requests as curl_requests
+except Exception:
+    curl_requests = None
+import requests
 
 warnings.filterwarnings('ignore')
 
@@ -53,11 +61,11 @@ class QStockNewsDataFetcher:
             "symbol": symbol,
             "news_data": None,
             "data_success": False,
-            "source": "qstock"
+            "source": "akshare/eastmoney"
         }
         
         if not self.available:
-            data["error"] = "qstock库未安装或不可用"
+            data["error"] = "新闻数据源不可用"
             return data
         
         # 只支持中国股票
@@ -67,7 +75,7 @@ class QStockNewsDataFetcher:
         
         try:
             # 获取新闻数据
-            print(f"📰 正在使用qstock获取 {symbol} 的最新新闻...")
+            print(f"📰 正在获取 {symbol} 的最新新闻...")
             news_data = self._get_news_data(symbol)
             
             if news_data:
@@ -95,10 +103,19 @@ class QStockNewsDataFetcher:
             
             news_items = []
             
-            # 方法1: 尝试获取个股新闻（东方财富）
+            # 方法1: 直接请求东方财富搜索接口。当前 AKShare 封装在部分环境会因正则转义失败。
+            try:
+                direct_items = self._get_eastmoney_news_direct(symbol)
+                if direct_items:
+                    news_items.extend(direct_items)
+                    print(f"   ✓ 从东方财富直连获取到 {len(direct_items)} 条新闻")
+            except Exception as e:
+                print(f"   ⚠ 东方财富直连获取失败: {e}")
+
+            # 方法2: 尝试获取个股新闻（东方财富 AKShare 封装）
             try:
                 # stock_news_em(symbol="600519") - 东方财富个股新闻
-                df = ak.stock_news_em(symbol=symbol)
+                df = ak.stock_news_em(symbol=symbol) if not news_items else None
                 
                 if df is not None and not df.empty:
                     print(f"   ✓ 从东方财富获取到 {len(df)} 条新闻")
@@ -127,7 +144,7 @@ class QStockNewsDataFetcher:
             except Exception as e:
                 print(f"   ⚠ 从东方财富获取失败: {e}")
             
-            # 方法2: 如果没有获取到，尝试获取新浪财经新闻
+            # 方法3: 如果没有获取到，尝试获取新浪财经新闻
             if not news_items:
                 try:
                     # stock_zh_a_spot_em() - 获取股票信息，包含代码和名称
@@ -169,7 +186,7 @@ class QStockNewsDataFetcher:
                 except Exception as e:
                     print(f"   ⚠ 从新浪财经获取失败: {e}")
             
-            # 方法3: 尝试获取财联社电报
+            # 方法4: 尝试获取财联社电报
             if not news_items or len(news_items) < 5:
                 try:
                     # stock_news_cls() - 财联社电报
@@ -222,6 +239,80 @@ class QStockNewsDataFetcher:
             import traceback
             traceback.print_exc()
             return None
+
+    def _get_eastmoney_news_direct(self, symbol):
+        """绕过 AKShare 的正则清洗问题，直接请求东方财富个股新闻。"""
+        url = "https://search-api-web.eastmoney.com/search/jsonp"
+        callback = f"jQuery{int(time.time() * 1000)}"
+        inner_param = {
+            "uid": "",
+            "keyword": symbol,
+            "type": ["cmsArticleWebOld"],
+            "client": "web",
+            "clientType": "web",
+            "clientVersion": "curr",
+            "param": {
+                "cmsArticleWebOld": {
+                    "searchScope": "default",
+                    "sort": "default",
+                    "pageIndex": 1,
+                    "pageSize": self.max_items,
+                    "preTag": "<em>",
+                    "postTag": "</em>",
+                }
+            },
+        }
+        params = {
+            "cb": callback,
+            "param": json.dumps(inner_param, ensure_ascii=False),
+            "_": str(int(time.time() * 1000)),
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            "Referer": f"https://so.eastmoney.com/news/s?keyword={symbol}",
+        }
+        if curl_requests:
+            response = curl_requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=12,
+                impersonate="chrome",
+            )
+        else:
+            response = requests.get(url, params=params, headers=headers, timeout=12)
+        response.raise_for_status()
+
+        text = response.text.strip()
+        match = re.match(r"^[^(]+\((.*)\)\s*;?$", text, re.S)
+        if not match:
+            return []
+
+        payload = json.loads(match.group(1))
+        rows = payload.get("result", {}).get("cmsArticleWebOld", []) or []
+        items = []
+        for row in rows[:self.max_items]:
+            title = self._clean_html_text(row.get("title", ""))
+            content = self._clean_html_text(row.get("content", ""))
+            code = row.get("code", "")
+            item = {
+                "source": "东方财富",
+                "title": title,
+                "content": content,
+                "date": row.get("date", ""),
+                "media": row.get("mediaName", ""),
+                "url": f"http://finance.eastmoney.com/a/{code}.html" if code else "",
+            }
+            if title or content:
+                items.append(item)
+        return items
+
+    def _clean_html_text(self, value):
+        """清理东方财富搜索结果中的高亮标签和转义空白。"""
+        text = str(value or "")
+        text = re.sub(r"</?em>", "", text)
+        text = text.replace("\u3000", " ").replace("\r\n", " ").replace("\n", " ")
+        return re.sub(r"\s+", " ", text).strip()
     
     def format_news_for_ai(self, data):
         """
