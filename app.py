@@ -269,7 +269,12 @@ st.markdown("""
     /* 隐藏Streamlit默认元素 */
     #MainMenu {visibility: hidden;}
     .stDeployButton {display: none;}
-    [data-testid="stToolbar"] {display: none;}
+    [data-testid="stToolbar"] {visibility: visible;}
+    [data-testid="collapsedControl"] {
+        visibility: visible !important;
+        display: block !important;
+        z-index: 100000 !important;
+    }
     footer {visibility: hidden;}
     
     /* 响应式设计 */
