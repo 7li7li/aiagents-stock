@@ -24,6 +24,7 @@ import time
 import base64
 import config
 
+from analysis_job_manager import analysis_job_manager
 from stock_data import StockDataFetcher
 from ai_agents import StockAnalysisAgents
 from pdf_generator import display_pdf_export_section
@@ -468,6 +469,21 @@ def main():
         except:
             pass
 
+        latest_job = analysis_job_manager.get_latest_active_job()
+        if latest_job:
+            st.markdown("---")
+            st.markdown("### 📌 当前分析任务")
+            st.caption(f"{latest_job['symbol']} - {latest_job['current_stage']}")
+            if st.button("查看当前任务", width='stretch', key="nav_current_job"):
+                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
+                           'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_smart_monitor',
+                           'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_macro_cycle']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.session_state.current_analysis_job_id = latest_job['job_id']
+                st.query_params["job_id"] = latest_job['job_id']
+                st.rerun()
+
         st.markdown("---")
 
         # 分析参数设置
@@ -583,6 +599,11 @@ def main():
     # 检查是否显示环境配置
     if 'show_config' in st.session_state and st.session_state.show_config:
         display_config_manager()
+        return
+
+    current_job_id = get_current_analysis_job_id()
+    if current_job_id:
+        display_analysis_job(current_job_id, period)
         return
 
     # 主界面
@@ -729,7 +750,24 @@ def main():
             if 'just_completed' in st.session_state:
                 del st.session_state.just_completed
 
-            run_stock_analysis(stock_input, period)
+            enabled_analysts_config = {
+                'technical': enable_technical,
+                'fundamental': enable_fundamental,
+                'fund_flow': enable_fund_flow,
+                'risk': enable_risk,
+                'sentiment': enable_sentiment,
+                'news': enable_news
+            }
+            selected_model = st.session_state.get('selected_model', config.DEFAULT_MODEL_NAME)
+            job_id = analysis_job_manager.create_single_stock_job(
+                stock_input,
+                period,
+                enabled_analysts_config,
+                selected_model,
+            )
+            st.session_state.current_analysis_job_id = job_id
+            st.query_params["job_id"] = job_id
+            st.rerun()
 
         else:
             # 批量股票分析
@@ -813,6 +851,82 @@ def check_api_key():
         return bool(config.DEEPSEEK_API_KEY and config.DEEPSEEK_API_KEY.strip())
     except:
         return False
+
+def get_current_analysis_job_id():
+    """从 URL 或 session_state 获取当前后台分析任务。"""
+    job_id = st.query_params.get("job_id")
+    if isinstance(job_id, list):
+        job_id = job_id[0] if job_id else None
+    if job_id:
+        st.session_state.current_analysis_job_id = job_id
+        return job_id
+    return st.session_state.get("current_analysis_job_id")
+
+def display_analysis_job(job_id, period):
+    """显示后台分析任务状态，支持刷新后恢复。"""
+    job = analysis_job_manager.get_job(job_id)
+    if not job:
+        st.warning("未找到分析任务，可能已被清理。")
+        if st.button("返回首页", key="missing_job_back"):
+            st.session_state.pop("current_analysis_job_id", None)
+            st.query_params.pop("job_id", None)
+            st.rerun()
+        return
+
+    st.subheader(f"📌 后台分析任务：{job['symbol']}")
+    status_label = {
+        "pending": "等待中",
+        "running": "运行中",
+        "success": "已完成",
+        "failed": "失败",
+    }.get(job["status"], job["status"])
+    st.info(f"状态：{status_label} | 阶段：{job['current_stage']} | 创建时间：{job['created_at']}")
+    st.progress(min(max(int(job.get("progress") or 0), 0), 100) / 100)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("刷新任务状态", key=f"refresh_job_{job_id}"):
+            st.rerun()
+    with col2:
+        if st.button("返回首页（任务继续后台运行）", key=f"back_home_{job_id}"):
+            st.session_state.pop("current_analysis_job_id", None)
+            st.query_params.pop("job_id", None)
+            st.rerun()
+
+    stream_sections = job.get("stream") or {}
+    if stream_sections:
+        st.markdown("### 🧠 大模型流式输出")
+        for label, text in stream_sections.items():
+            with st.expander(f"🧠 {label}", expanded=job["status"] in ("pending", "running")):
+                st.markdown(str(text)[-12000:])
+
+    if job["status"] in ("pending", "running"):
+        time.sleep(1.5)
+        st.rerun()
+        return
+
+    if job["status"] == "failed":
+        st.error(job.get("error") or "分析失败")
+        return
+
+    result = job.get("result") or {}
+    if not result.get("success"):
+        st.error(result.get("error", "分析失败"))
+        return
+
+    stock_info = result.get("stock_info", {})
+    agents_results = result.get("agents_results", {})
+    discussion_result = result.get("discussion_result", "")
+    final_decision = result.get("final_decision", {})
+    indicators = result.get("indicators", {})
+
+    stock_info_current, stock_data, current_indicators = get_stock_data(stock_info.get('symbol', job['symbol']), period)
+    display_stock_info(stock_info, current_indicators or indicators)
+    if stock_data is not None:
+        display_stock_chart(stock_data, stock_info)
+    display_agents_analysis(agents_results)
+    display_team_discussion(discussion_result)
+    display_final_decision(final_decision, stock_info, agents_results, discussion_result)
 
 @st.cache_data(ttl=300)  # 缓存5分钟
 def get_stock_data(symbol, period):
