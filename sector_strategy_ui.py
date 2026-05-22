@@ -848,7 +848,7 @@ def generate_sector_markdown_report(result_data: dict) -> str:
 
 - **生成时间**: {current_time}
 - **分析周期**: 当日市场数据
-- **AI模型**: DeepSeek Multi-Agent System
+- **AI模型**: Multi-Agent AI System
 - **分析维度**: 宏观·板块·资金·情绪
 
 > ⚠️ 本报告由AI系统自动生成，仅供参考，不构成投资建议。投资有风险，决策需谨慎。

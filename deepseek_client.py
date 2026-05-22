@@ -81,6 +81,8 @@ class DeepSeekClient:
                 return final_result if final_result else "API返回空响应"
 
             except Exception as e:
+                if str(e) == "JOB_CANCELLED":
+                    raise
                 last_error = e
                 partial_result = ""
                 if reasoning_content:

@@ -9,6 +9,7 @@ from typing import Dict, Optional
 import config
 from ai_agents import StockAnalysisAgents
 from database import db
+from longhubang_engine import LonghubangEngine
 from stock_data import StockDataFetcher
 
 
@@ -45,6 +46,19 @@ class AnalysisJobManager:
                 updated_at TEXT NOT NULL
             )
             """
+        )
+        cursor.execute(
+            """
+            UPDATE analysis_jobs
+            SET status = ?, current_stage = ?, error = ?, updated_at = ?
+            WHERE status IN ('pending', 'running')
+            """,
+            (
+                "failed",
+                "任务已中断",
+                "应用已重启，后台线程已结束。请重新发起分析。",
+                datetime.now().isoformat(),
+            ),
         )
         conn.commit()
         conn.close()
@@ -83,6 +97,47 @@ class AnalysisJobManager:
         conn.close()
 
         thread = threading.Thread(target=self._run_single_stock_job, args=(job_id,), daemon=True)
+        with self._lock:
+            self._threads[job_id] = thread
+        thread.start()
+        return job_id
+
+    def create_longhubang_job(self, selected_model: str, date: Optional[str] = None, days: int = 1) -> str:
+        job_id = uuid.uuid4().hex
+        now = datetime.now().isoformat()
+        params = {
+            "selected_model": selected_model,
+            "date": date,
+            "days": days,
+        }
+        symbol = f"指定日期 {date}" if date else f"最近{days}天"
+
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO analysis_jobs
+            (job_id, job_type, status, symbol, period, params_json, progress, current_stage, stream_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                "longhubang",
+                "pending",
+                symbol,
+                None,
+                json.dumps(params, ensure_ascii=False, default=str),
+                0,
+                "等待开始",
+                json.dumps({}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        thread = threading.Thread(target=self._run_longhubang_job, args=(job_id,), daemon=True)
         with self._lock:
             self._threads[job_id] = thread
         thread.start()
@@ -128,6 +183,57 @@ class AnalysisJobManager:
         conn.close()
         return self.get_job(row[0]) if row else None
 
+    def get_active_jobs(self):
+        conn = self._connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT job_id FROM analysis_jobs
+            WHERE status IN ('pending', 'running')
+            ORDER BY
+                CASE job_type
+                    WHEN 'single_stock' THEN 1
+                    WHEN 'longhubang' THEN 2
+                    ELSE 9
+                END,
+                created_at ASC
+            """
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [job for row in rows if (job := self.get_job(row[0]))]
+
+    def cancel_job(self, job_id: str) -> bool:
+        job = self.get_job(job_id)
+        if not job or job.get("status") not in ("pending", "running"):
+            return False
+        self._update_job(
+            job_id,
+            status="cancelled",
+            current_stage="已取消",
+            error="用户已取消任务。",
+        )
+        return True
+
+    def is_cancelled(self, job_id: str) -> bool:
+        job = self.get_job(job_id)
+        return bool(job and job.get("status") == "cancelled")
+
+    def _raise_if_cancelled(self, job_id: str):
+        if self.is_cancelled(job_id):
+            raise RuntimeError("JOB_CANCELLED")
+
+    def _mark_cancelled(self, job_id: str, stream_sections=None):
+        fields = {
+            "status": "cancelled",
+            "progress": 100,
+            "current_stage": "已取消",
+            "error": "用户已取消任务。",
+        }
+        if stream_sections is not None:
+            fields["stream_json"] = json.dumps(stream_sections, ensure_ascii=False, default=str)
+        self._update_job(job_id, **fields)
+
     def _update_job(self, job_id: str, **fields):
         if not fields:
             return
@@ -145,6 +251,7 @@ class AnalysisJobManager:
         stream_dirty = {"chars": 0, "last_flush": time.time()}
 
         def flush_stream(force=False):
+            self._raise_if_cancelled(job_id)
             if not force and stream_dirty["chars"] < 120 and time.time() - stream_dirty["last_flush"] < 1.0:
                 return
             self._update_job(job_id, stream_json=json.dumps(stream_sections, ensure_ascii=False, default=str))
@@ -152,6 +259,7 @@ class AnalysisJobManager:
             stream_dirty["last_flush"] = time.time()
 
         def append_stream_chunk(label: str, chunk: str):
+            self._raise_if_cancelled(job_id)
             stream_sections[label] = stream_sections.get(label, "") + chunk
             if len(stream_sections[label]) > 12000:
                 stream_sections[label] = stream_sections[label][-12000:]
@@ -168,6 +276,7 @@ class AnalysisJobManager:
             enabled_analysts = params.get("enabled_analysts") or {}
             selected_model = params.get("selected_model") or config.DEFAULT_MODEL_NAME
 
+            self._raise_if_cancelled(job_id)
             self._update_job(job_id, status="running", progress=5, current_stage="获取股票数据")
 
             fetcher = StockDataFetcher()
@@ -179,6 +288,7 @@ class AnalysisJobManager:
             if stock_data is None or (isinstance(stock_data, dict) and "error" in stock_data):
                 raise RuntimeError("无法获取股票历史数据")
 
+            self._raise_if_cancelled(job_id)
             stock_data_with_indicators = fetcher.calculate_technical_indicators(stock_data)
             indicators = fetcher.get_latest_indicators(stock_data_with_indicators)
 
@@ -244,14 +354,17 @@ class AnalysisJobManager:
             )
             flush_stream(force=True)
 
+            self._raise_if_cancelled(job_id)
             self._update_job(job_id, progress=75, current_stage="团队讨论")
             discussion_result = agents.conduct_team_discussion(agents_results, stock_info)
             flush_stream(force=True)
 
+            self._raise_if_cancelled(job_id)
             self._update_job(job_id, progress=88, current_stage="最终投资决策")
             final_decision = agents.make_final_decision(discussion_result, stock_info, indicators)
             flush_stream(force=True)
 
+            self._raise_if_cancelled(job_id)
             saved_to_db = False
             db_error = None
             try:
@@ -279,6 +392,7 @@ class AnalysisJobManager:
                 "saved_to_db": saved_to_db,
                 "db_error": db_error,
             }
+            self._raise_if_cancelled(job_id)
             self._update_job(
                 job_id,
                 status="success",
@@ -288,6 +402,78 @@ class AnalysisJobManager:
                 stream_json=json.dumps(stream_sections, ensure_ascii=False, default=str),
             )
         except Exception as exc:
+            if str(exc) == "JOB_CANCELLED" or self.is_cancelled(job_id):
+                self._mark_cancelled(job_id, stream_sections)
+                return
+            self._update_job(
+                job_id,
+                status="failed",
+                progress=100,
+                current_stage="分析失败",
+                error=str(exc),
+                stream_json=json.dumps(stream_sections, ensure_ascii=False, default=str),
+            )
+
+    def _run_longhubang_job(self, job_id: str):
+        stream_sections = {}
+        stream_dirty = {"chars": 0, "last_flush": time.time()}
+
+        def flush_stream(force=False):
+            self._raise_if_cancelled(job_id)
+            if not force and stream_dirty["chars"] < 120 and time.time() - stream_dirty["last_flush"] < 1.0:
+                return
+            self._update_job(job_id, stream_json=json.dumps(stream_sections, ensure_ascii=False, default=str))
+            stream_dirty["chars"] = 0
+            stream_dirty["last_flush"] = time.time()
+
+        def append_stream_chunk(label: str, chunk: str):
+            self._raise_if_cancelled(job_id)
+            stream_sections[label] = stream_sections.get(label, "") + chunk
+            if len(stream_sections[label]) > 12000:
+                stream_sections[label] = stream_sections[label][-12000:]
+            stream_dirty["chars"] += len(chunk)
+            flush_stream()
+
+        def update_progress(progress: int, stage: str):
+            self._raise_if_cancelled(job_id)
+            self._update_job(job_id, progress=progress, current_stage=stage)
+
+        try:
+            job = self.get_job(job_id)
+            if not job:
+                return
+            params = job["params"]
+            selected_model = params.get("selected_model") or config.DEFAULT_MODEL_NAME
+            date = params.get("date")
+            days = int(params.get("days") or 1)
+
+            self._raise_if_cancelled(job_id)
+            self._update_job(job_id, status="running", progress=5, current_stage="初始化智瞰龙虎引擎")
+            engine = LonghubangEngine(
+                model=selected_model,
+                stream_callback=append_stream_chunk,
+                progress_callback=update_progress,
+            )
+            result = engine.run_comprehensive_analysis(date=date, days=days)
+            flush_stream(force=True)
+
+            self._raise_if_cancelled(job_id)
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "智瞰龙虎分析失败")
+
+            self._raise_if_cancelled(job_id)
+            self._update_job(
+                job_id,
+                status="success",
+                progress=100,
+                current_stage="分析完成",
+                result_json=json.dumps(result, ensure_ascii=False, default=str),
+                stream_json=json.dumps(stream_sections, ensure_ascii=False, default=str),
+            )
+        except Exception as exc:
+            if str(exc) == "JOB_CANCELLED" or self.is_cancelled(job_id):
+                self._mark_cancelled(job_id, stream_sections)
+                return
             self._update_job(
                 job_id,
                 status="failed",

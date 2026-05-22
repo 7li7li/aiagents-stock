@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import time
 import base64
 
+from analysis_job_manager import analysis_job_manager
 from longhubang_engine import LonghubangEngine
 from longhubang_pdf import LonghubangPDFGenerator
 import config
@@ -109,6 +110,11 @@ def display_analysis_tab():
         return
     
     st.subheader("🔍 龙虎榜综合分析")
+
+    current_job_id = get_current_longhubang_job_id()
+    if current_job_id:
+        display_longhubang_job(current_job_id)
+        return
     
     # 参数设置
     col1, col2 = st.columns([2, 2])
@@ -146,6 +152,9 @@ def display_analysis_tab():
         if st.button("🔄 清除结果", width='stretch'):
             if 'longhubang_result' in st.session_state:
                 del st.session_state.longhubang_result
+            if 'current_longhubang_job_id' in st.session_state:
+                del st.session_state.current_longhubang_job_id
+            st.query_params.pop("longhubang_job_id", None)
             st.success("已清除分析结果")
             st.rerun()
     
@@ -158,11 +167,15 @@ def display_analysis_tab():
             del st.session_state.longhubang_result
         
         # 准备参数（使用.env中配置的默认模型）
+        selected_model = config.DEFAULT_MODEL_NAME
         if analysis_mode == "指定日期":
             date_str = selected_date.strftime('%Y-%m-%d')
-            run_longhubang_analysis(date=date_str)
+            job_id = analysis_job_manager.create_longhubang_job(selected_model=selected_model, date=date_str)
         else:
-            run_longhubang_analysis(days=days)
+            job_id = analysis_job_manager.create_longhubang_job(selected_model=selected_model, days=days)
+        st.session_state.current_longhubang_job_id = job_id
+        st.query_params["longhubang_job_id"] = job_id
+        st.rerun()
     
     # 显示分析结果
     if 'longhubang_result' in st.session_state:
@@ -172,6 +185,82 @@ def display_analysis_tab():
             display_analysis_results(result)
         else:
             st.error(f"❌ 分析失败: {result.get('error', '未知错误')}")
+
+
+def get_current_longhubang_job_id():
+    """从 URL 或 session_state 获取当前智瞰龙虎后台任务。"""
+    job_id = st.query_params.get("longhubang_job_id")
+    if isinstance(job_id, list):
+        job_id = job_id[0] if job_id else None
+    if job_id:
+        st.session_state.current_longhubang_job_id = job_id
+        return job_id
+    return st.session_state.get("current_longhubang_job_id")
+
+
+def display_longhubang_job(job_id):
+    """显示智瞰龙虎后台分析任务。"""
+    job = analysis_job_manager.get_job(job_id)
+    if not job or job.get("job_type") != "longhubang":
+        st.warning("未找到智瞰龙虎分析任务，可能已被清理。")
+        if st.button("返回龙虎榜分析", key="missing_lhb_job_back"):
+            st.session_state.pop("current_longhubang_job_id", None)
+            st.query_params.pop("longhubang_job_id", None)
+            st.rerun()
+        return
+
+    status_label = {
+        "pending": "等待中",
+        "running": "运行中",
+        "success": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消",
+    }.get(job["status"], job["status"])
+
+    st.info(f"状态：{status_label} | 范围：{job['symbol']} | 阶段：{job['current_stage']} | 创建时间：{job['created_at']}")
+    st.progress(min(max(int(job.get("progress") or 0), 0), 100) / 100)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("刷新任务状态", key=f"refresh_lhb_job_{job_id}"):
+            st.rerun()
+    with col2:
+        if st.button("返回分析页（任务继续后台运行）", key=f"back_lhb_home_{job_id}"):
+            st.session_state.pop("current_longhubang_job_id", None)
+            st.query_params.pop("longhubang_job_id", None)
+            st.rerun()
+    with col3:
+        if job["status"] in ("pending", "running") and st.button("取消任务", key=f"cancel_lhb_job_{job_id}"):
+            analysis_job_manager.cancel_job(job_id)
+            st.rerun()
+
+    stream_sections = job.get("stream") or {}
+    if stream_sections:
+        st.markdown("### 🧠 大模型流式输出")
+        for label, text in stream_sections.items():
+            with st.expander(f"🧠 {label}", expanded=job["status"] in ("pending", "running")):
+                st.markdown(str(text)[-12000:])
+
+    if job["status"] in ("pending", "running"):
+        time.sleep(1.5)
+        st.rerun()
+        return
+
+    if job["status"] == "failed":
+        st.error(job.get("error") or "智瞰龙虎分析失败")
+        return
+
+    if job["status"] == "cancelled":
+        st.warning(job.get("error") or "任务已取消")
+        return
+
+    result = job.get("result") or {}
+    if not result.get("success"):
+        st.error(result.get("error", "智瞰龙虎分析失败"))
+        return
+
+    st.session_state.longhubang_result = result
+    display_analysis_results(result)
 
 
 def run_longhubang_analysis(model=None, date=None, days=1):

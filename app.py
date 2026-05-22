@@ -55,6 +55,20 @@ def show_current_model_info():
     st.sidebar.info(f"当前模型: **{config.DEFAULT_MODEL_NAME}**")
     st.sidebar.caption("可在「环境配置」中修改模型名称")
 
+def mask_secret_for_display(value):
+    """Mask sensitive config values in UI previews."""
+    return "***已设置***" if value else ""
+
+SENSITIVE_CONFIG_KEYS = {"DEEPSEEK_API_KEY", "TUSHARE_TOKEN", "EMAIL_PASSWORD", "WEBHOOK_URL"}
+
+def preserve_blank_secrets(config_values, config_info):
+    """Keep existing secret values when secret inputs are left blank."""
+    saved_config = dict(config_values)
+    for key in SENSITIVE_CONFIG_KEYS:
+        if not saved_config.get(key):
+            saved_config[key] = config_info.get(key, {}).get("value", "")
+    return saved_config
+
 # 自定义CSS样式 - 专业版
 st.markdown("""
 <style>
@@ -295,7 +309,7 @@ def main():
     st.markdown("""
     <div class="top-nav">
         <h1 class="nav-title">📈 复合多AI智能体股票团队分析系统</h1>
-        <p class="nav-subtitle">基于DeepSeek的专业量化投资分析平台 | Multi-Agent Stock Analysis System</p>
+        <p class="nav-subtitle">基于AI大模型的专业量化投资分析平台 | Multi-Agent Stock Analysis System</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -403,7 +417,7 @@ def main():
                     if key in st.session_state:
                         del st.session_state[key]
 
-            if st.button("🤖 AI盯盘", width='stretch', key="nav_smart_monitor", help="DeepSeek AI自动盯盘决策交易（支持A股T+1）"):
+            if st.button("🤖 AI盯盘", width='stretch', key="nav_smart_monitor", help="AI自动盯盘决策交易（支持A股T+1）"):
                 st.session_state.show_smart_monitor = True
                 for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
                            'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_low_price_bull', 'show_news_flow', 'show_macro_analysis']:
@@ -474,20 +488,27 @@ def main():
         except:
             pass
 
-        latest_job = analysis_job_manager.get_latest_active_job()
-        if latest_job:
+        active_jobs = analysis_job_manager.get_active_jobs()
+        if active_jobs:
             st.markdown("---")
             st.markdown("### 📌 当前分析任务")
-            st.caption(f"{latest_job['symbol']} - {latest_job['current_stage']}")
-            if st.button("查看当前任务", width='stretch', key="nav_current_job"):
-                for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
-                           'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_smart_monitor',
-                           'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_macro_cycle']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.session_state.current_analysis_job_id = latest_job['job_id']
-                st.query_params["job_id"] = latest_job['job_id']
-                st.rerun()
+            for active_job in active_jobs:
+                job_type_label = "智瞰龙虎" if active_job.get("job_type") == "longhubang" else "股票分析"
+                st.caption(f"{job_type_label} | {active_job['symbol']} - {active_job['current_stage']}")
+                if st.button(f"查看{job_type_label}任务", width='stretch', key=f"nav_current_job_{active_job['job_id']}"):
+                    for key in ['show_history', 'show_monitor', 'show_config', 'show_main_force',
+                               'show_sector_strategy', 'show_longhubang', 'show_portfolio', 'show_smart_monitor',
+                               'show_low_price_bull', 'show_news_flow', 'show_macro_analysis', 'show_macro_cycle']:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    if active_job.get("job_type") == "longhubang":
+                        st.session_state.show_longhubang = True
+                        st.session_state.current_longhubang_job_id = active_job['job_id']
+                        st.query_params["longhubang_job_id"] = active_job['job_id']
+                    else:
+                        st.session_state.current_analysis_job_id = active_job['job_id']
+                        st.query_params["job_id"] = active_job['job_id']
+                    st.rerun()
 
         st.markdown("---")
 
@@ -731,7 +752,7 @@ def main():
 
     if analyze_button and stock_input:
         if not api_key_status:
-            st.error("❌ 请先配置 DeepSeek API Key")
+            st.error("❌ 请先配置 AI API Key")
             return
 
         # 检查是否至少选择了一位分析师
@@ -878,17 +899,24 @@ def display_analysis_job(job_id, period):
             st.rerun()
         return
 
+    if job.get("job_type") != "single_stock":
+        st.warning("当前任务不是股票分析任务。")
+        st.session_state.pop("current_analysis_job_id", None)
+        st.query_params.pop("job_id", None)
+        return
+
     st.subheader(f"📌 后台分析任务：{job['symbol']}")
     status_label = {
         "pending": "等待中",
         "running": "运行中",
         "success": "已完成",
         "failed": "失败",
+        "cancelled": "已取消",
     }.get(job["status"], job["status"])
     st.info(f"状态：{status_label} | 阶段：{job['current_stage']} | 创建时间：{job['created_at']}")
     st.progress(min(max(int(job.get("progress") or 0), 0), 100) / 100)
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("刷新任务状态", key=f"refresh_job_{job_id}"):
             st.rerun()
@@ -896,6 +924,10 @@ def display_analysis_job(job_id, period):
         if st.button("返回首页（任务继续后台运行）", key=f"back_home_{job_id}"):
             st.session_state.pop("current_analysis_job_id", None)
             st.query_params.pop("job_id", None)
+            st.rerun()
+    with col3:
+        if job["status"] in ("pending", "running") and st.button("取消任务", key=f"cancel_job_{job_id}"):
+            analysis_job_manager.cancel_job(job_id)
             st.rerun()
 
     stream_sections = job.get("stream") or {}
@@ -912,6 +944,10 @@ def display_analysis_job(job_id, period):
 
     if job["status"] == "failed":
         st.error(job.get("error") or "分析失败")
+        return
+
+    if job["status"] == "cancelled":
+        st.warning(job.get("error") or "任务已取消")
         return
 
     result = job.get("result") or {}
@@ -1845,7 +1881,7 @@ def show_example_interface():
         - NVDA (英伟达)
         """)
 
-    st.info("💡 提示：首次运行需要配置DeepSeek API Key，请在.env中设置DEEPSEEK_API_KEY")
+    st.info("💡 提示：首次运行需要配置AI API Key，请在环境配置中设置API密钥")
 
     st.markdown("---")
     st.markdown("""
@@ -2301,36 +2337,37 @@ def display_config_manager():
         st.session_state.temp_config = {key: info["value"] for key, info in config_info.items()}
 
     with tab1:
-        st.markdown("### DeepSeek API配置")
-        st.markdown("DeepSeek是系统的核心AI引擎，必须配置才能使用分析功能。")
-        st.markdown("DeepSeek:https://api.deepseek.com/v1")
+        st.markdown("### AI API配置")
+        st.markdown("AI模型服务是系统的核心分析引擎，必须配置才能使用分析功能。")
+        st.markdown("常见 OpenAI 兼容 API 地址示例：")
+        st.markdown("默认兼容地址: https://api.deepseek.com/v1")
         st.markdown("硅基流动:https://api.siliconflow.cn/v1")
         st.markdown("火山引擎:https://ark.cn-beijing.volces.com/api/v3")
         st.markdown("阿里:https://dashscope.aliyuncs.com/compatible-mode/v1")
 
-    # DeepSeek API Key
+    # AI API Key
         api_key_info = config_info["DEEPSEEK_API_KEY"]
-        current_api_key = st.session_state.temp_config.get("DEEPSEEK_API_KEY", "")
+        current_api_key = config_info["DEEPSEEK_API_KEY"].get("value", "")
 
         new_api_key = st.text_input(
             f"🔑 {api_key_info['description']} {'*' if api_key_info['required'] else ''}",
-            value=current_api_key,
+            value="",
             type="password",
-            help="从 https://platform.deepseek.com 获取API密钥",
+            placeholder="留空则保留当前密钥",
+            help="填写当前AI模型服务商的API密钥；留空保存不会清除当前密钥",
             key="input_deepseek_api_key"
         )
         st.session_state.temp_config["DEEPSEEK_API_KEY"] = new_api_key
 
         # 显示当前状态
-        if new_api_key:
-            masked_key = new_api_key[:8] + "*" * (len(new_api_key) - 12) + new_api_key[-4:] if len(new_api_key) > 12 else "***"
-            st.success(f"✅ API密钥已设置: {masked_key}")
+        if new_api_key or current_api_key:
+            st.success("✅ API密钥已设置")
         else:
             st.warning("⚠️ 未设置API密钥，系统无法使用AI分析功能")
 
         st.markdown("---")
 
-        # DeepSeek Base URL
+        # AI Base URL
         base_url_info = config_info["DEEPSEEK_BASE_URL"]
         current_base_url = st.session_state.temp_config.get("DEEPSEEK_BASE_URL", "")
 
@@ -2363,35 +2400,36 @@ def display_config_manager():
 
         st.markdown("""
         **常用模型名称参考：**
-        - `deepseek-chat` — DeepSeek Chat（默认）
-        - `deepseek-reasoner` — DeepSeek Reasoner（推理增强）
+        - `deepseek-chat` — 默认兼容聊天模型
+        - `deepseek-reasoner` — 默认兼容推理模型
         - `qwen-plus` — 通义千问 Plus
         - `qwen-turbo` — 通义千问 Turbo
         - `gpt-4o` — OpenAI GPT-4o
         - `gpt-4o-mini` — OpenAI GPT-4o Mini
         
-        > 💡 使用非 DeepSeek 模型时，请同时修改上方的 API地址 和 API密钥
+        > 💡 更换模型服务商时，请同时修改上方的 API地址、API密钥 和模型名称
         """)
 
-        st.info("💡 如何获取DeepSeek API密钥？\n\n1. 访问 https://platform.deepseek.com\n2. 注册/登录账号\n3. 进入API密钥管理页面\n4. 创建新的API密钥\n5. 复制密钥并粘贴到上方输入框")
+        st.info("💡 如何配置AI API密钥？\n\n1. 登录你的模型服务商控制台\n2. 进入API密钥管理页面\n3. 创建新的API密钥\n4. 将密钥粘贴到上方输入框\n5. 同步确认API地址和模型名称是否匹配")
 
     with tab2:
         st.markdown("### Tushare数据接口（可选）")
         st.markdown("Tushare提供更丰富的A股财务数据，配置后可以获取更详细的财务分析。")
 
         tushare_info = config_info["TUSHARE_TOKEN"]
-        current_tushare = st.session_state.temp_config.get("TUSHARE_TOKEN", "")
+        current_tushare = config_info["TUSHARE_TOKEN"].get("value", "")
 
         new_tushare = st.text_input(
             f"🎫 {tushare_info['description']}",
-            value=current_tushare,
+            value="",
             type="password",
-            help="从 https://tushare.pro 获取Token",
+            placeholder="留空则保留当前Token",
+            help="从 https://tushare.pro 获取Token；留空保存不会清除当前Token",
             key="input_tushare_token"
         )
         st.session_state.temp_config["TUSHARE_TOKEN"] = new_tushare
 
-        if new_tushare:
+        if new_tushare or current_tushare:
             st.success("✅ Tushare Token已设置")
         else:
             st.info("ℹ️ 未设置Tushare Token，系统将使用其他数据源")
@@ -2522,14 +2560,15 @@ def display_config_manager():
 
             # 邮箱授权码
             email_password_info = config_info.get("EMAIL_PASSWORD", {"description": "邮箱授权码", "value": ""})
-            current_email_password = st.session_state.temp_config.get("EMAIL_PASSWORD", "")
+            current_email_password = config_info.get("EMAIL_PASSWORD", {}).get("value", "")
 
             new_email_password = st.text_input(
                 f"🔐 {email_password_info['description']}",
-                value=current_email_password,
+                value="",
                 type="password",
                 disabled=not new_email_enabled,
-                help="不是邮箱登录密码，而是SMTP授权码",
+                placeholder="留空则保留当前授权码",
+                help="不是邮箱登录密码，而是SMTP授权码；留空保存不会清除当前授权码",
                 key="input_email_password"
             )
             st.session_state.temp_config["EMAIL_PASSWORD"] = new_email_password
@@ -2547,7 +2586,8 @@ def display_config_manager():
             )
             st.session_state.temp_config["EMAIL_TO"] = new_email_to
 
-            if new_email_enabled and all([new_smtp_server, new_email_from, new_email_password, new_email_to]):
+            effective_email_password = new_email_password or current_email_password
+            if new_email_enabled and all([new_smtp_server, new_email_from, effective_email_password, new_email_to]):
                 st.success("✅ 邮件配置完整")
             elif new_email_enabled:
                 st.warning("⚠️ 邮件配置不完整")
@@ -2586,13 +2626,14 @@ def display_config_manager():
 
             # Webhook URL
             webhook_url_info = config_info.get("WEBHOOK_URL", {"description": "Webhook地址", "value": ""})
-            current_webhook_url = st.session_state.temp_config.get("WEBHOOK_URL", "")
+            current_webhook_url = config_info.get("WEBHOOK_URL", {}).get("value", "")
 
             new_webhook_url = st.text_input(
                 f"🔗 {webhook_url_info['description']}",
-                value=current_webhook_url,
+                value="",
                 disabled=not new_webhook_enabled,
                 placeholder="https://oapi.dingtalk.com/robot/send?access_token=...",
+                help="留空保存不会清除当前Webhook地址",
                 key="input_webhook_url"
             )
             st.session_state.temp_config["WEBHOOK_URL"] = new_webhook_url
@@ -2612,14 +2653,15 @@ def display_config_manager():
             st.session_state.temp_config["WEBHOOK_KEYWORD"] = new_webhook_keyword
 
             # 测试连通按钮
-            if new_webhook_enabled and new_webhook_url:
+            effective_webhook_url = new_webhook_url or current_webhook_url
+            if new_webhook_enabled and effective_webhook_url:
                 if st.button("🧪 测试Webhook连通", width='stretch', key="test_webhook_btn"):
                     with st.spinner("正在发送测试消息..."):
                         # 临时更新配置
                         temp_env_backup = {}
                         for key in ["WEBHOOK_ENABLED", "WEBHOOK_TYPE", "WEBHOOK_URL", "WEBHOOK_KEYWORD"]:
                             temp_env_backup[key] = os.getenv(key)
-                            os.environ[key] = st.session_state.temp_config.get(key, "")
+                            os.environ[key] = effective_webhook_url if key == "WEBHOOK_URL" else st.session_state.temp_config.get(key, "")
 
                         try:
                             # 创建临时通知服务实例
@@ -2641,7 +2683,7 @@ def display_config_manager():
                                 elif key in os.environ:
                                     del os.environ[key]
 
-            if new_webhook_enabled and new_webhook_url:
+            if new_webhook_enabled and effective_webhook_url:
                 st.success(f"✅ Webhook配置完整 ({new_webhook_type})")
             elif new_webhook_enabled:
                 st.warning("⚠️ 请配置Webhook URL")
@@ -2663,12 +2705,14 @@ def display_config_manager():
 
     with col1:
         if st.button("💾 保存配置", type="primary", width='stretch'):
+            saved_config = preserve_blank_secrets(st.session_state.temp_config, config_info)
+
             # 验证配置
-            is_valid, message = config_manager.validate_config(st.session_state.temp_config)
+            is_valid, message = config_manager.validate_config(saved_config)
 
             if is_valid:
                 # 保存配置
-                if config_manager.write_env(st.session_state.temp_config):
+                if config_manager.write_env(saved_config):
                     st.success("✅ 配置已保存到 .env 文件")
                     st.info("ℹ️ 请重启应用使配置生效")
 
@@ -2701,20 +2745,21 @@ def display_config_manager():
                 del st.session_state.temp_config
             st.rerun()
 
-    # 显示当前.env文件内容
+    # 显示当前配置预览
     st.markdown("---")
-    with st.expander("📄 查看当前 .env 文件内容"):
+    with st.expander("📄 查看当前配置预览（敏感信息已隐藏）"):
         current_config = config_manager.read_env()
 
         st.code(f"""# AI股票分析系统环境配置
-# 由系统自动生成和管理
+# 以下为WebUI预览，敏感信息已隐藏
 
-# ========== DeepSeek API配置 ==========
-DEEPSEEK_API_KEY="{current_config.get('DEEPSEEK_API_KEY', '')}"
-DEEPSEEK_BASE_URL="{current_config.get('DEEPSEEK_BASE_URL', '')}"
+# ========== AI API配置 ==========
+AI_API_KEY="{mask_secret_for_display(current_config.get('DEEPSEEK_API_KEY', ''))}"
+AI_BASE_URL="{current_config.get('DEEPSEEK_BASE_URL', '')}"
+AI_MODEL_NAME="{current_config.get('DEFAULT_MODEL_NAME', '')}"
 
 # ========== Tushare数据接口（可选）==========
-TUSHARE_TOKEN="{current_config.get('TUSHARE_TOKEN', '')}"
+TUSHARE_TOKEN="{mask_secret_for_display(current_config.get('TUSHARE_TOKEN', ''))}"
 
 # ========== MiniQMT量化交易配置（可选）==========
 MINIQMT_ENABLED="{current_config.get('MINIQMT_ENABLED', 'false')}"
@@ -2727,13 +2772,13 @@ EMAIL_ENABLED="{current_config.get('EMAIL_ENABLED', 'false')}"
 SMTP_SERVER="{current_config.get('SMTP_SERVER', '')}"
 SMTP_PORT="{current_config.get('SMTP_PORT', '587')}"
 EMAIL_FROM="{current_config.get('EMAIL_FROM', '')}"
-EMAIL_PASSWORD="{current_config.get('EMAIL_PASSWORD', '')}"
+EMAIL_PASSWORD="{mask_secret_for_display(current_config.get('EMAIL_PASSWORD', ''))}"
 EMAIL_TO="{current_config.get('EMAIL_TO', '')}"
 
 # ========== Webhook通知配置（可选）==========
 WEBHOOK_ENABLED="{current_config.get('WEBHOOK_ENABLED', 'false')}"
 WEBHOOK_TYPE="{current_config.get('WEBHOOK_TYPE', 'dingtalk')}"
-WEBHOOK_URL="{current_config.get('WEBHOOK_URL', '')}"
+WEBHOOK_URL="{mask_secret_for_display(current_config.get('WEBHOOK_URL', ''))}"
 WEBHOOK_KEYWORD="{current_config.get('WEBHOOK_KEYWORD', 'aiagents通知')}"
 """, language="bash")
 

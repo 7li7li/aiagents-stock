@@ -17,7 +17,7 @@ import config
 class LonghubangEngine:
     """龙虎榜综合分析引擎"""
     
-    def __init__(self, model=None, db_path='longhubang.db'):
+    def __init__(self, model=None, db_path='longhubang.db', stream_callback=None, progress_callback=None):
         """
         初始化分析引擎
         
@@ -27,13 +27,18 @@ class LonghubangEngine:
         """
         self.data_fetcher = LonghubangDataFetcher()
         self.database = LonghubangDatabase(db_path)
-        self.agents = LonghubangAgents(model=model)
+        self.agents = LonghubangAgents(model=model, stream_callback=stream_callback)
         self.scoring = LonghubangScoring()
+        self.progress_callback = progress_callback
         # 初始化日志
         self.logger = logging.getLogger(__name__)
         if not self.logger.handlers:
             logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(name)s: %(message)s')
         self.logger.info("[智瞰龙虎] 分析引擎初始化完成")
+
+    def _set_progress(self, progress: int, stage: str):
+        if self.progress_callback:
+            self.progress_callback(progress, stage)
     
     def run_comprehensive_analysis(self, date=None, days=1) -> Dict[str, Any]:
         """
@@ -61,6 +66,7 @@ class LonghubangEngine:
         
         try:
             # 阶段1: 获取龙虎榜数据
+            self._set_progress(10, "获取龙虎榜数据")
             self.logger.info("[阶段1] 获取龙虎榜数据...")
             self.logger.info("-" * 60)
             
@@ -78,12 +84,14 @@ class LonghubangEngine:
             self.logger.info(f"成功获取 {len(data_list)} 条龙虎榜记录")
             
             # 阶段2: 保存数据到数据库
+            self._set_progress(22, "保存龙虎榜数据")
             self.logger.info("[阶段2] 保存数据到数据库...")
             self.logger.info("-" * 60)
             saved_count = self.database.save_longhubang_data(data_list)
             self.logger.info(f"保存 {saved_count} 条记录")
             
             # 阶段3: 数据分析和统计
+            self._set_progress(30, "统计龙虎榜数据")
             self.logger.info("[阶段3] 数据分析和统计...")
             self.logger.info("-" * 60)
             summary = self.data_fetcher.analyze_data_summary(data_list)
@@ -98,6 +106,7 @@ class LonghubangEngine:
             self.logger.info("数据统计完成")
             
             # 阶段3.5: AI智能评分排名
+            self._set_progress(38, "AI智能评分排名")
             self.logger.info("[阶段3.5] AI智能评分排名...")
             self.logger.info("-" * 60)
             scoring_df = self.scoring.score_all_stocks(data_list)
@@ -121,26 +130,31 @@ class LonghubangEngine:
             agents_results = {}
             
             # 1. 游资行为分析师
+            self._set_progress(48, "游资行为分析师分析")
             self.logger.info("1/5 游资行为分析师...")
             youzi_result = self.agents.youzi_behavior_analyst(formatted_data, summary)
             agents_results["youzi"] = youzi_result
             
             # 2. 个股潜力分析师
+            self._set_progress(58, "个股潜力分析师分析")
             self.logger.info("2/5 个股潜力分析师...")
             stock_result = self.agents.stock_potential_analyst(formatted_data, summary)
             agents_results["stock"] = stock_result
             
             # 3. 题材追踪分析师
+            self._set_progress(68, "题材追踪分析师分析")
             self.logger.info("3/5 题材追踪分析师...")
             theme_result = self.agents.theme_tracker_analyst(formatted_data, summary)
             agents_results["theme"] = theme_result
             
             # 4. 风险控制专家
+            self._set_progress(78, "风险控制专家分析")
             self.logger.info("4/5 风险控制专家...")
             risk_result = self.agents.risk_control_specialist(formatted_data, summary)
             agents_results["risk"] = risk_result
             
             # 5. 首席策略师综合
+            self._set_progress(88, "首席策略师综合分析")
             self.logger.info("5/5 首席策略师综合分析...")
             all_analyses = [youzi_result, stock_result, theme_result, risk_result]
             chief_result = self.agents.chief_strategist(all_analyses)
@@ -150,6 +164,7 @@ class LonghubangEngine:
             self.logger.info("所有AI分析师分析完成")
             
             # 阶段5: 提取推荐股票
+            self._set_progress(92, "提取推荐股票")
             self.logger.info("[阶段5] 提取推荐股票...")
             self.logger.info("-" * 60)
             recommended_stocks = self._extract_recommended_stocks(
@@ -161,6 +176,7 @@ class LonghubangEngine:
             self.logger.info(f"提取 {len(recommended_stocks)} 只推荐股票")
             
             # 阶段6: 生成最终报告
+            self._set_progress(95, "生成最终报告")
             self.logger.info("[阶段6] 生成最终报告...")
             self.logger.info("-" * 60)
             final_report = self._generate_final_report(agents_results, summary, recommended_stocks)
@@ -168,6 +184,7 @@ class LonghubangEngine:
             self.logger.info("最终报告生成完成")
             
             # 阶段7: 保存完整分析报告到数据库
+            self._set_progress(98, "保存完整分析报告")
             self.logger.info("[阶段7] 保存完整分析报告...")
             self.logger.info("-" * 60)
             data_date_range = self._get_date_range(data_list)

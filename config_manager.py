@@ -16,13 +16,13 @@ class ConfigManager:
         self.default_config = {
             "DEEPSEEK_API_KEY": {
                 "value": "",
-                "description": "DeepSeek API密钥",
+                "description": "AI API密钥",
                 "required": True,
                 "type": "password"
             },
             "DEEPSEEK_BASE_URL": {
                 "value": "https://api.deepseek.com/v1",
-                "description": "DeepSeek API地址",
+                "description": "AI API地址",
                 "required": False,
                 "type": "text"
             },
@@ -174,8 +174,8 @@ class ConfigManager:
             lines.append("# 由系统自动生成和管理")
             lines.append("")
             
-            # DeepSeek配置
-            lines.append("# ========== DeepSeek API配置 ==========")
+            # AI API配置
+            lines.append("# ========== AI API配置 ==========")
             lines.append(f'DEEPSEEK_API_KEY="{config.get("DEEPSEEK_API_KEY", "")}"')
             lines.append(f'DEEPSEEK_BASE_URL="{config.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")}"')
             lines.append("")
@@ -247,7 +247,7 @@ class ConfigManager:
         if config.get("DEEPSEEK_API_KEY"):
             api_key = config.get("DEEPSEEK_API_KEY", "")
             if len(api_key) < 20:
-                return False, "DeepSeek API Key格式不正确（长度太短）"
+                return False, "AI API Key格式不正确（长度太短）"
         
         return True, "配置验证通过"
     
